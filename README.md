@@ -348,7 +348,7 @@ Note: The methods above are built on Pillow's [`ImageDraw` methods](http://pillo
 |--------|-------------|
 |`.extract_text(x_tolerance=3, x_tolerance_ratio=None, y_tolerance=3, layout=False, x_density=7.25, y_density=13, line_dir_render=None, char_dir_render=None, **kwargs)`| Collates all of the page's character objects into a single string.<ul><li><p>When `layout=False`: Adds spaces where the difference between the `x1` of one character and the `x0` of the next is greater than `x_tolerance`. (If `x_tolerance_ratio` is not `None`, the extractor uses a dynamic `x_tolerance` equal to `x_tolerance_ratio * previous_character["size"]`.) Adds newline characters where the difference between the `doctop` of one character and the `doctop` of the next is greater than `y_tolerance`.</p></li><li><p>When `layout=True` (*experimental feature*): Attempts to mimic the structural layout of the text on the page(s), using `x_density` and `y_density` to determine the minimum number of characters/newlines per "point," the PDF unit of measurement. Passing `line_dir_render="ttb"/"btt"/"ltr"/"rtl"` and/or `char_dir_render="ttb"/"btt"/"ltr"/"rtl"` will output the the lines/characters in a different direction than the default. All remaining `**kwargs` are passed to `.extract_words(...)` (see below), the first step in calculating the layout.</p></li></ul>|
 |`.extract_text_simple(x_tolerance=3, y_tolerance=3)`| A slightly faster but less flexible version of `.extract_text(...)`, using a simpler logic.|
-|`.extract_words(x_tolerance=3, x_tolerance_ratio=None, y_tolerance=3, keep_blank_chars=False, use_text_flow=False, line_dir="ttb", char_dir="ltr", line_dir_rotated="ttb", char_dir_rotated="ltr", extra_attrs=[], split_at_punctuation=False, expand_ligatures=True, return_chars=False)`| Returns a list of all word-looking things and their bounding boxes. Words are considered to be sequences of characters where (for "upright" characters) the difference between the `x1` of one character and the `x0` of the next is less than or equal to `x_tolerance` *and* where the `doctop` of one character and the `doctop` of the next is less than or equal to `y_tolerance`. (If `x_tolerance_ratio` is not `None`, the extractor uses a dynamic `x_tolerance` equal to `x_tolerance_ratio * previous_character["size"]`.) A similar approach is taken for non-upright characters, but instead measuring the vertical, rather than horizontal, distances between them. Changing `keep_blank_chars` to `True` will mean that blank characters are treated as part of a word, not as a space between words. Changing `use_text_flow` to `True` will use the PDF's underlying flow of characters as a guide for ordering and segmenting the words, rather than presorting the characters by x/y position. (This mimics how dragging a cursor highlights text in a PDF; as with that, the order does not always appear to be logical.) The arguments `line_dir` and `char_dir` tell this method the direction in which lines/characters are expected to be read; valid options are "ttb" (top-to-bottom), "btt" (bottom-to-top), "ltr" (left-to-right), and "rtl" (right-to-left). The `line_dir_rotated` and `char_dir_rotated` arguments are similar, but for text that has been rotated. Passing a list of `extra_attrs`  (e.g., `["fontname", "size"]` will restrict each words to characters that share exactly the same value for each of those [attributes](#char-properties), and the resulting word dicts will indicate those attributes. Setting `split_at_punctuation` to `True` will enforce breaking tokens at punctuations specified by `string.punctuation`; or you can specify the list of separating punctuation by pass a string, e.g., <code>split_at_punctuation='!"&\'()*+,.:;<=>?@[\]^\`\{\|\}~'</code>. Unless you set `expand_ligatures=False`, ligatures such as `ﬁ` will be expanded into their constituent letters (e.g., `fi`). Passing `return_chars=True` will add, to each word dictionary, a list of its constituent characters, as a list in the `"chars"` field.|
+|`.extract_words(x_tolerance=3, x_tolerance_ratio=None, y_tolerance=3, keep_blank_chars=False, use_text_flow=False, line_dir="ttb", char_dir="ltr", line_dir_rotated="ttb", char_dir_rotated="ltr", extra_attrs=[], split_at_punctuation=False, expand_ligatures=True, return_chars=False, rotation_mode="legacy")`| Returns a list of all word-looking things and their bounding boxes. Words are considered to be sequences of characters where (for "upright" characters) the difference between the `x1` of one character and the `x0` of the next is less than or equal to `x_tolerance` *and* where the `doctop` of one character and the `doctop` of the next is less than or equal to `y_tolerance`. (If `x_tolerance_ratio` is not `None`, the extractor uses a dynamic `x_tolerance` equal to `x_tolerance_ratio * previous_character["size"]`.) A similar approach is taken for non-upright characters, but instead measuring the vertical, rather than horizontal, distances between them. Changing `keep_blank_chars` to `True` will mean that blank characters are treated as part of a word, not as a space between words. Changing `use_text_flow` to `True` will use the PDF's underlying flow of characters as a guide for ordering and segmenting the words, rather than presorting the characters by x/y position. (This mimics how dragging a cursor highlights text in a PDF; as with that, the order does not always appear to be logical.) The arguments `line_dir` and `char_dir` tell this method the direction in which lines/characters are expected to be read; valid options are "ttb" (top-to-bottom), "btt" (bottom-to-top), "ltr" (left-to-right), and "rtl" (right-to-left). The `line_dir_rotated` and `char_dir_rotated` arguments are similar, but for text that has been rotated. Passing a list of `extra_attrs`  (e.g., `["fontname", "size"]` will restrict each words to characters that share exactly the same value for each of those [attributes](#char-properties), and the resulting word dicts will indicate those attributes. Setting `split_at_punctuation` to `True` will enforce breaking tokens at punctuations specified by `string.punctuation`; or you can specify the list of separating punctuation by pass a string, e.g., <code>split_at_punctuation='!"&\'()*+,.:;<=>?@[\]^\`\{\|\}~'</code>. Unless you set `expand_ligatures=False`, ligatures such as `ﬁ` will be expanded into their constituent letters (e.g., `fi`). Passing `return_chars=True` will add, to each word dictionary, a list of its constituent characters, as a list in the `"chars"` field. Passing `rotation_mode="auto"` groups characters by their matrix rotation (0, 90, 180 or 270 degrees counter-clockwise relative to the visible page) before segmentation, and adds a `"rotation"` field to each word; see [Rotated text and rotated tables](#rotated-text-and-rotated-tables-experimental). Any other value raises `ValueError`.|
 |`.extract_text_lines(layout=False, strip=True, return_chars=True, **kwargs)`|*Experimental feature* that returns a list of dictionaries representing the lines of text on the page. The `strip` parameter works analogously to Python's `str.strip()` method, and returns `text` attributes without their surrounding whitespace. (Only relevant when `layout = True`.) Setting `return_chars` to `False` will exclude the individual character objects from the returned text-line dicts. The remaining `**kwargs` are those you would pass to `.extract_text(layout=True, ...)`.|
 |`.search(pattern, regex=True, case=True, main_group=0, return_groups=True, return_chars=True, layout=False, **kwargs)`|*Experimental feature* that allows you to search a page's text, returning a list of all instances that match the query. For each instance, the response dictionary object contains the matching text, any regex group matches, the bounding box coordinates, and the char objects themselves. `pattern` can be a compiled regular expression, an uncompiled regular expression, or a non-regex string. If `regex` is `False`, the pattern is treated as a non-regex string. If `case` is `False`, the search is performed in a case-insensitive manner. Setting `main_group` restricts the results to a specific regex group within the `pattern` (default of `0` means the entire match). Setting `return_groups` and/or `return_chars` to `False` will exclude the lists of the matched regex groups and/or characters from being added (as `"groups"` and `"chars"` to the return dicts). The `layout` parameter operates as it does for `.extract_text(...)`. The remaining `**kwargs` are those you would pass to `.extract_text(layout=True, ...)`. __Note__: Zero-width and all-whitespace matches are discarded, because they (generally) have no explicit position on the page. |
 |`.dedupe_chars(tolerance=1, extra_attrs=("fontname", "size"))`| Returns a version of the page with duplicate chars — those sharing the same text, positioning (within `tolerance` x/y), and `extra_attrs` as other characters — removed. (See [Issue #71](https://github.com/jsvine/pdfplumber/issues/71) to understand the motivation.)|
@@ -369,7 +369,7 @@ Note: The methods above are built on Pillow's [`ImageDraw` methods](http://pillo
 
 | Method | Description |
 |--------|-------------|
-|`.find_tables(table_settings={})`|Returns a list of `Table` objects. The `Table` object provides access to the `.cells`, `.rows`, `.columns`, and `.bbox` properties, as well as the `.extract(x_tolerance=3, y_tolerance=3)` method.|
+|`.find_tables(table_settings={})`|Returns a list of `Table` objects. The `Table` object provides access to the `.cells`, `.rows`, `.columns`, `.bbox` and `.rotation` properties, as well as the `.extract(x_tolerance=3, y_tolerance=3)` method. With `rotation_mode="auto"` in the settings, each table carries the detected rotation and its rows/columns are in that table's logical order.|
 |`.find_table(table_settings={})`|Similar to `.find_tables(...)`, but returns the *largest* table on the page, as a `Table` object. If multiple tables have the same size — as measured by the number of cells — this method returns the table closest to the top of the page.|
 |`.extract_tables(table_settings={})`|Returns the text extracted from *all* tables found on the page, represented as a list of lists of lists, with the structure `table -> row -> cell`.|
 |`.extract_table(table_settings={})`|Returns the text extracted from the *largest* table on the page (see `.find_table(...)` above), represented as a list of lists, with the structure `row -> cell`.|
@@ -411,6 +411,7 @@ By default, `extract_tables` uses the page's vertical and horizontal lines (or r
     "text_x_tolerance": 3,
     "text_y_tolerance": 3,
     "text_*": …, # See below
+    "rotation_mode": "legacy",
 }
 ```
 
@@ -427,6 +428,7 @@ By default, `extract_tables` uses the page's vertical and horizontal lines (or r
 |`"min_words_horizontal"`| When using `"horizontal_strategy": "text"`, at least `min_words_horizontal` words must share the same alignment.|
 |`"intersection_tolerance"`, `"intersection_x_tolerance"`, `"intersection_y_tolerance"`| When combining edges into cells, orthogonal edges must be within `intersection_tolerance` points to be considered intersecting.|
 |`"text_*"`| All settings prefixed with `text_` are then used when extracting text from each discovered table. All possible arguments to `Page.extract_text(...)` are also valid here.|
+|`"rotation_mode"`| Either `"legacy"` (default, unchanged behaviour) or `"auto"`. Auto requires both strategies to be `"text"` and rejects `lines`/`lines_strict`/`explicit`/mixed strategies. See [Rotated text and rotated tables](#rotated-text-and-rotated-tables-experimental).|
 |`"text_x_tolerance"`, `"text_y_tolerance"`| These `text_`-prefixed settings *also* apply to the table-identification algorithm when the `text` strategy is used. I.e., when that algorithm searches for words, it will expect the individual letters in each word to be no more than `text_x_tolerance`/`text_y_tolerance` points apart.|
 
 ### Table-extraction strategies
@@ -445,6 +447,152 @@ Both `vertical_strategy` and `horizontal_strategy` accept the following options:
 - Often it's helpful to crop a page — `Page.crop(bounding_box)` — before trying to extract the table.
 
 - Table extraction for `pdfplumber` was radically redesigned for `v0.5.0`, and introduced breaking changes.
+
+### Rotated text and rotated tables (experimental)
+
+Public PDFs sometimes place tables sideways, and a single page can mix
+orientations. Pass `rotation_mode="auto"` to `Page.extract_words(...)` (and,
+for tables, to the table settings) to handle this. The default remains
+`"legacy"`, whose API, return values and behaviour are unchanged.
+
+```python
+import pdfplumber
+
+with pdfplumber.open("mixed-orientations.pdf") as pdf:
+    page = pdf.pages[0]
+
+    words = page.extract_words(rotation_mode="auto", return_chars=True)
+    for word in words:
+        print(word["rotation"], word["text"])  # 0, 90, 180 or 270
+
+    tables = page.find_tables(
+        {
+            "vertical_strategy": "text",
+            "horizontal_strategy": "text",
+            "rotation_mode": "auto",
+        }
+    )
+    for table in tables:
+        print(table.rotation, table.bbox)
+        for row in table.extract():  # already in the table's own row order
+            print(row)
+```
+
+`rotation` is the counter-clockwise angle of the text baseline relative to
+the final visible page (so it already accounts for the PDF page's `/Rotate`
+value). In auto mode:
+
+- `Page.extract_words` returns words with a `rotation` field. Characters of
+  opposite orientation are never joined, letters inside a word are never
+  reversed, and multiple lines are ordered by the region's normal reading
+  order. `return_chars=True` still returns the original character
+  dictionaries (with their original `matrix`); word bounding boxes remain in
+  the page's ordinary coordinate system.
+- `find_tables`, `find_table`, `extract_tables` and `extract_table` accept
+  the auto setting. Table discovery requires `vertical_strategy` and
+  `horizontal_strategy` to both be `"text"`; the `lines`, `lines_strict`,
+  `explicit`, and mixed strategies are rejected with `ValueError`.
+- `Table.rotation` records the detected direction. `table.extract()` needs no
+  extra arguments: it uses that rotation automatically.
+- `Table.bbox`, `Table.cells` and the cells inside `Table.rows` /
+  `Table.columns` keep the original page coordinate convention, while the
+  sequence of `rows` and `columns` follows the table's logical reading
+  order. A 180-degree table is therefore not returned upside down merely
+  because its page coordinates decrease; a 90-degree table is not returned
+  transposed.
+- `find_table` and `extract_table` still pick the table with the most cells.
+  Ties are resolved deterministically by page `top` and then `x0` of the
+  table bounding box.
+
+Auto mode accepts only the default `line_dir`, `char_dir`,
+`line_dir_rotated`, `char_dir_rotated` and `use_text_flow=False`; supplying
+any other direction or enabling text flow raises `ValueError`. The same
+checks apply to `text_`-prefixed settings. Auto table discovery also rejects
+non-`text` strategies and a conflicting `text_rotation_mode`.
+
+Characters whose matrices are sheared, mirrored or rotated by a
+non-orthogonal angle are rejected with `ValueError` rather than silently
+mis-handled. The test is tolerant of ordinary floating-point noise from an
+exact 90/180/270-degree transform (the angle tolerance is 0.5 degrees and
+the relative orthogonality tolerance is 1e-3).
+
+If two candidate tables genuinely claim the same characters, pdfplumber
+raises `pdfplumber.rotation_table.AmbiguousTableError` (a `ValueError`
+subclass) exposing the competing candidates in `.tables`; it never resolves
+the conflict by traversal order. Pages without enough evidence simply yield
+no tables.
+
+For ETL use, keep the page, the detected orientation and the cell
+coordinates together so results can be checked against the source page:
+
+```python
+import json
+import pdfplumber
+
+rows_out = []
+with pdfplumber.open("source.pdf") as pdf:
+    for page_number, page in enumerate(pdf.pages, start=1):
+        settings = {
+            "vertical_strategy": "text",
+            "horizontal_strategy": "text",
+            "rotation_mode": "auto",
+        }
+        for table_index, table in enumerate(page.find_tables(settings)):
+            for row_index, row in enumerate(table.extract()):
+                rows_out.append(
+                    {
+                        "page": page_number,
+                        "table": table_index,
+                        "rotation": table.rotation,
+                        "bbox": table.bbox,
+                        "row": row_index,
+                        "cells": row,
+                    }
+                )
+
+json.dump(rows_out, open("rows.json", "w"), ensure_ascii=False, indent=2)
+```
+
+The bounding box can be fed straight back into `Page.crop(table.bbox)` (or
+used as a relative box with `relative=True`). Cropping a table keeps its
+`rotation`, cell text and character assignment unchanged, and `Page.chars`,
+`Page.edges` and their dictionaries are never rewritten by auto mode.
+
+#### How auto table discovery trades off
+
+Auto discovery works entirely from word positions -- no user-supplied
+regions, table counts or ruling lines. Words are grouped by rotation, then
+clustered into text lines. Repeated starts, ends and centres become *column
+cores*; neighbouring cores join into one table only when they share at least
+two text lines. That rule keeps a side paragraph, a header, or a second
+table out of the current table, while still connecting all the columns of a
+genuine table. Cores are split into separate tables at a blank gutter wider
+than twice the component's median positive inter-column gutter, which is
+what separates two side-by-side tables even when their rows share baselines.
+A fragment with fewer than two columns is merged back into its neighbour,
+because a one-column table is never emitted and such fragments come from a
+wide column inside a single table.
+
+Logical rows are formed by clustering a table's lines with a tolerance of
+half the nominal row pitch. A cell's second line is closer than half the
+pitch in normal typesetting, while genuinely separate rows are farther
+apart, so sparse cells do not shift the row grid. The trade-offs are:
+
+- *Merging a neighbouring table* happens if the inter-table band is not
+  clearly wider than the table's own column spacing. Two column pitches is
+  the documented safe distance.
+- *Missing a sparse row* happens only if its baseline gap from the previous
+  row drops below half the nominal pitch, which makes it indistinguishable
+  from a second line in a cell. Adding a short all-empty spacer row is
+  supported; a table with no populated row at all is rejected.
+- *Cost* is dominated by sorting and clustering: roughly O(n log n) in the
+  number of words, with space proportional to characters, lines, column
+  cores, components and the tables actually emitted. The ambiguity check
+  sweeps candidates by vertical position, so it costs O(k log k) when
+  candidates do not overlap and O(k^2) candidate comparisons only in the
+  pathological case where k emitted candidates all overlap each other.
+  Neither work nor memory grows with page pixel area, and the implementation
+  never enumerates character, word or cell pairs, nor rasterises the page.
 
 
 ## Extracting form values

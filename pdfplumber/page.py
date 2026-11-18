@@ -449,16 +449,29 @@ class Page(Container):
             objects[kind].append(obj)
         return objects
 
+    @staticmethod
+    def _use_auto_tables(tset: TableSettings) -> bool:
+        text_mode = (tset.text_settings or {}).get("rotation_mode")
+        return tset.rotation_mode == "auto" or text_mode == "auto"
+
     def debug_tablefinder(
         self, table_settings: Optional[T_table_settings] = None
     ) -> TableFinder:
         tset = TableSettings.resolve(table_settings)
+        if self._use_auto_tables(tset):
+            from .rotation_table import AutoTableFinder
+
+            return AutoTableFinder(self, tset)  # type: ignore[return-value]
         return TableFinder(self, tset)
 
     def find_tables(
         self, table_settings: Optional[T_table_settings] = None
     ) -> List[Table]:
         tset = TableSettings.resolve(table_settings)
+        if self._use_auto_tables(tset):
+            from .rotation_table import AutoTableFinder
+
+            return AutoTableFinder(self, tset).tables
         return TableFinder(self, tset).tables
 
     def find_table(
@@ -527,12 +540,26 @@ class Page(Container):
         )
 
     def extract_text(self, **kwargs: Any) -> str:
+        rotation_mode = kwargs.get("rotation_mode", "legacy")
+        if rotation_mode != "legacy":
+            from .utils.rotation import validate_rotation_mode
+
+            validate_rotation_mode(rotation_mode)
+            from .utils.rotation import extract_text_auto
+
+            return extract_text_auto(self.chars, **kwargs)
+        # Legacy path: drop the explicit legacy marker so the unchanged
+        # keyword surface is passed to the historical code path.
+        kwargs.pop("rotation_mode", None)
         return self.get_textmap(**tuplify_list_kwargs(kwargs)).as_string
 
     def extract_text_simple(self, **kwargs: Any) -> str:
         return utils.extract_text_simple(self.chars, **kwargs)
 
     def extract_words(self, **kwargs: Any) -> T_obj_list:
+        """Extract words.  Pass ``rotation_mode="auto"`` to segment words for
+        each character rotation separately; the default ``"legacy"`` keeps
+        the historical behaviour unchanged."""
         return utils.extract_words(self.chars, **kwargs)
 
     def extract_text_lines(

@@ -29,6 +29,12 @@ from .pdfinternals import (  # noqa: F401
     resolve_all,
     resolve_and_decode,
 )
+from .rotation import (  # noqa: F401
+    ROTATIONS,
+    UnsupportedRotationError,
+    extract_words_auto,
+    matrix_rotation,
+)
 from .text import (  # noqa: F401
     DEFAULT_X_DENSITY,
     DEFAULT_X_TOLERANCE,

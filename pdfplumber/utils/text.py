@@ -695,7 +695,17 @@ class WordExtractor:
 def extract_words(
     chars: T_obj_list, return_chars: bool = False, **kwargs: Any
 ) -> T_obj_list:
-    return WordExtractor(**kwargs).extract_words(chars, return_chars)
+    rotation_mode = kwargs.pop("rotation_mode", "legacy")
+    if rotation_mode == "legacy":
+        return WordExtractor(**kwargs).extract_words(chars, return_chars)
+    elif rotation_mode == "auto":
+        from .rotation import extract_words_auto
+
+        return extract_words_auto(chars, return_chars=return_chars, **kwargs)
+    else:
+        raise ValueError(
+            "rotation_mode must be 'legacy' or 'auto', " f"not {rotation_mode!r}"
+        )
 
 
 TEXTMAP_KWARGS = inspect.signature(WordMap.to_textmap).parameters.keys()
@@ -729,6 +739,22 @@ def extract_text(
     chars = to_list(chars)
     if len(chars) == 0:
         return ""
+
+    rotation_mode = kwargs.get("rotation_mode", "legacy")
+    if rotation_mode not in ("legacy", "auto"):
+        raise ValueError(
+            "rotation_mode must be 'legacy' or 'auto', " f"not {rotation_mode!r}"
+        )
+
+    if rotation_mode == "auto":
+        from .rotation import extract_text_auto
+
+        return extract_text_auto(
+            chars,
+            line_dir_render=line_dir_render,
+            char_dir_render=char_dir_render,
+            **kwargs,
+        )
 
     if kwargs.get("layout"):
         textmap_kwargs = {

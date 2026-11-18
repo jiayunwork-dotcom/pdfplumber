@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](http://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- `rotation_mode` for `Page.extract_words(...)` and table settings, defaulting
+  to `"legacy"` (unchanged behaviour). `"auto"` groups characters by their
+  matrix rotation (0/90/180/270 degrees counter-clockwise relative to the
+  visible page), so words and tables from mixed orientations are separated
+  correctly. Auto-mode words and `Table` objects carry a `rotation` field;
+  `find_tables`/`find_table`/`extract_tables`/`extract_table` accept the
+  setting, and a detected `Table.extract()` uses its own rotation without
+  further arguments.
+- Auto-mode table discovery for the existing two-axis `"text"` strategy. It
+  reports same-page tables with different orientations as separate results,
+  keeps side-by-side same-orientation tables apart at a gutter wider than
+  twice the normal column spacing, and preserves the table's logical row
+  and column order while keeping `Table.bbox` and cell coordinates in the
+  original page system.
+- `pdfplumber.rotation_table.AmbiguousTableError`, raised when candidate
+  tables genuinely claim the same characters.
+- `examples/collect_rotated_tables.py`, an ETL-oriented example.
+
+### Notes
+- Auto mode accepts only the default `line_dir`/`char_dir`/
+  `line_dir_rotated`/`char_dir_rotated` settings and `use_text_flow=False`;
+  other values raise `ValueError`, including via `text_`-prefixed table
+  settings.
+- Auto table discovery rejects `lines`, `lines_strict`, `explicit` and mixed
+  strategies with `ValueError`.
+- Characters with sheared, mirrored or non-orthogonal matrices are rejected
+  with `ValueError`; ordinary floating-point noise from exact quarter turns
+  is accepted (0.5-degree angle tolerance, 1e-3 relative orthogonality
+  tolerance).
+
 ## [0.11.7] - 2025-06-12
 
 ### Added

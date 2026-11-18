@@ -1,7 +1,18 @@
 import itertools
 from dataclasses import dataclass
 from operator import itemgetter
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Type, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    Union,
+    cast,
+)
 
 from . import utils
 from ._typing import T_bbox, T_num, T_obj, T_obj_iter, T_obj_list, T_point
@@ -375,9 +386,17 @@ class Column(CellGroup):
 
 
 class Table(object):
-    def __init__(self, page: "Page", cells: List[T_bbox]):
+    def __init__(
+        self,
+        page: "Page",
+        cells: List[T_bbox],
+        rotation: Optional[int] = None,
+    ):
         self.page = page
         self.cells = cells
+        self._auto = rotation is not None
+        if rotation is not None:
+            self.rotation = rotation % 360
 
     @property
     def bbox(self) -> T_bbox:
@@ -390,6 +409,9 @@ class Table(object):
         )
 
     def _get_rows_or_cols(self, kind: Type[CellGroup]) -> List[CellGroup]:
+        if self._auto:
+            return self._get_auto_rows_or_cols(kind)
+
         axis = 0 if kind is Row else 1
         antiaxis = int(not axis)
 
@@ -410,6 +432,32 @@ class Table(object):
             rows.append(row)
         return rows
 
+    def _get_auto_rows_or_cols(self, kind: Type[CellGroup]) -> List[CellGroup]:
+        """Group cells in the table's own logical order.
+
+        The first row is the one read first in the table's rotation, so a
+        180-degree table is not reversed just because its page coordinates
+        decrease.  Cells themselves stay in original Page coordinates; only
+        the sequence is logical.  Grouping is a single sort plus a single
+        groupby, i.e. O(cells log cells).
+        """
+        from .utils.rotation import to_local_box
+
+        rotation = self.rotation
+        axis = 1 if kind is Row else 0
+        cross = 0 if kind is Row else 1
+
+        local = [(to_local_box(cell, rotation), cell) for cell in self.cells]
+        local.sort(key=lambda item: (item[0][axis], item[0][cross]))
+
+        groups: List[CellGroup] = []
+        for _key, items in itertools.groupby(
+            local, key=lambda item: round(item[0][axis], 9)
+        ):
+            members = [cell for _box, cell in items]
+            groups.append(kind(cast(List[Optional[T_bbox]], members)))
+        return groups
+
     @property
     def rows(self) -> List[CellGroup]:
         return self._get_rows_or_cols(Row)
@@ -418,7 +466,136 @@ class Table(object):
     def columns(self) -> List[CellGroup]:
         return self._get_rows_or_cols(Column)
 
+    def _auto_local_grid(self) -> Tuple[List[T_num], List[T_num]]:
+        """Return sorted local u/v boundaries for this auto table's grid."""
+
+        from .utils.rotation import to_local_box
+
+        rotation = self.rotation
+        us: Set[T_num] = set()
+        vs: Set[T_num] = set()
+        for cell in self.cells:
+            u0, v0, u1, v1 = to_local_box(cell, rotation)
+            us.add(round(u0, 9))
+            us.add(round(u1, 9))
+            vs.add(round(v0, 9))
+            vs.add(round(v1, 9))
+        return sorted(us), sorted(vs)
+
+    @staticmethod
+    def _index_of(bounds: List[T_num], value: T_num) -> int:
+        if len(bounds) < 2:
+            return -1
+        low, high = 0, len(bounds) - 1
+        while low + 1 < high:
+            mid = (low + high) // 2
+            if value < bounds[mid]:
+                high = mid
+            else:
+                low = mid
+        if bounds[low] <= value < bounds[low + 1]:
+            return low
+        return -1
+
+    def _auto_assign_chars(self) -> List[List[T_obj]]:
+        """
+        Assign characters to cells in O(chars * log(cells)) time.
+
+        Row and column boundaries are binary-searched, so no character/cell
+        pair enumeration is performed.  Each character is assigned to at
+        most one cell because the local intervals are half-open.  Only
+        characters whose rotation matches the table's rotation participate.
+        """
+
+        from .utils.rotation import matrix_rotation, to_local_box
+
+        rotation = self.rotation
+        us, vs = self._auto_local_grid()
+        n_columns = max(0, len(us) - 1)
+        n_rows = max(0, len(vs) - 1)
+        selected: List[List[T_obj]] = [[] for _ in range(n_columns * n_rows)]
+        if n_columns == 0 or n_rows == 0:
+            return selected
+
+        for char in self.page.chars:
+            try:
+                if matrix_rotation(char["matrix"]) != rotation:
+                    continue
+            except ValueError:
+                continue
+            u0, v0, u1, v1 = to_local_box(
+                (char["x0"], char["top"], char["x1"], char["bottom"]), rotation
+            )
+            column = self._index_of(us, (u0 + u1) / 2.0)
+            row = self._index_of(vs, (v0 + v1) / 2.0)
+            if column >= 0 and row >= 0:
+                selected[row * n_columns + column].append(char)
+        return selected
+
+    def claimed_char_ids(self) -> Set[int]:
+        """Identity set of the characters this table would extract."""
+
+        if self._auto:
+            cached = getattr(self, "_claimed_ids", None)
+            if cached is None:
+                cached = {
+                    id(char)
+                    for cell_chars in self._auto_assign_chars()
+                    for char in cell_chars
+                }
+                self._claimed_ids = cached
+            return cached
+
+        chars = self.page.chars
+        ids = set()
+        for cell in self.cells:
+            x0, top, x1, bottom = cell
+            for char in chars:
+                h_mid = (char["x0"] + char["x1"]) / 2
+                v_mid = (char["top"] + char["bottom"]) / 2
+                if x0 <= h_mid < x1 and top <= v_mid < bottom:
+                    ids.add(id(char))
+        return ids
+
+    def _extract_auto(self, **kwargs: Any) -> List[List[Optional[str]]]:
+        from .utils.rotation import _make_local_proxy, to_local_box
+
+        rotation = self.rotation
+        kwargs = dict(kwargs)
+        kwargs.pop("rotation_mode", None)
+        us, vs = self._auto_local_grid()
+        n_columns = max(0, len(us) - 1)
+        selected = self._auto_assign_chars()
+
+        table_arr: List[List[Optional[str]]] = []
+        for row in self._get_auto_rows_or_cols(Row):
+            arr: List[Optional[str]] = []
+            for cell in row.cells:
+                assert cell is not None
+                cell_bbox = to_local_box(cell, rotation)
+                column = self._index_of(us, (cell_bbox[0] + cell_bbox[2]) / 2.0)
+                row_index = self._index_of(vs, (cell_bbox[1] + cell_bbox[3]) / 2.0)
+                cell_chars = (
+                    selected[row_index * n_columns + column]
+                    if column >= 0 and row_index >= 0
+                    else []
+                )
+                if len(cell_chars):
+                    proxies = [_make_local_proxy(char, rotation) for char in cell_chars]
+                    if "layout" in kwargs:
+                        kwargs["layout_width"] = cell_bbox[2] - cell_bbox[0]
+                        kwargs["layout_height"] = cell_bbox[3] - cell_bbox[1]
+                        kwargs["layout_bbox"] = cell_bbox
+                    cell_text = utils.extract_text(proxies, **kwargs)
+                else:
+                    cell_text = ""
+                arr.append(cell_text)
+            table_arr.append(arr)
+        return table_arr
+
     def extract(self, **kwargs: Any) -> List[List[Optional[str]]]:
+        if self._auto:
+            return self._extract_auto(**kwargs)
 
         chars = self.page.chars
         table_arr = []
@@ -500,6 +677,7 @@ class TableSettings:
     intersection_x_tolerance: T_num = UNSET
     intersection_y_tolerance: T_num = UNSET
     text_settings: Optional[Dict[str, Any]] = None
+    rotation_mode: str = "legacy"
 
     def __post_init__(self) -> None:
         """Clean up user-provided table settings.
@@ -520,6 +698,24 @@ class TableSettings:
         for setting in NON_NEGATIVE_SETTINGS:
             if (getattr(self, setting) or 0) < 0:
                 raise ValueError(f"Table setting '{setting}' cannot be negative")
+
+        if self.rotation_mode not in ("legacy", "auto"):
+            raise ValueError(
+                "rotation_mode must be 'legacy' or 'auto', "
+                f"not {self.rotation_mode!r}"
+            )
+
+        if self.text_settings is not None and "rotation_mode" in self.text_settings:
+            text_mode = self.text_settings["rotation_mode"]
+            if text_mode not in ("legacy", "auto"):
+                raise ValueError(
+                    "text_rotation_mode must be 'legacy' or 'auto', "
+                    f"not {text_mode!r}"
+                )
+            if self.rotation_mode == "legacy" and text_mode == "auto":
+                # The text_ prefix may initiate auto mode; the effective
+                # mode becomes auto so strategy validation applies.
+                self.rotation_mode = "auto"
 
         for orientation in ["horizontal", "vertical"]:
             strategy = getattr(self, orientation + "_strategy")
