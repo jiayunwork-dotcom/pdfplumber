@@ -253,6 +253,62 @@ my_char_rotation = my_char_ctm.skew_x
 
 Additionally, both `pdfplumber.PDF` and `pdfplumber.Page` provide access to several derived lists of objects: `.rect_edges` (which decomposes each rectangle into its four lines), `.curve_edges` (which does the same for `curve` objects), and `.edges` (which combines `.rect_edges`, `.curve_edges`, and `.lines`). 
 
+On a cropped page, these derived edges describe only the parts of the page's
+original strokes that actually lie inside the crop — a crop never invents a
+new side along the crop boundary. Specifically:
+
+- A rectangle's four sides are the sides it was drawn with. Cropping a
+  rectangle keeps just the portions of those sides inside the crop; it does
+  not add sides along the crop edge. A rectangle drawn entirely outside the
+  crop yields no edges.
+- A path (an open `curve`, a closed path, or a single `line`) is clipped
+  segment by segment. A path that leaves the crop and comes back is cut, not
+  bridged across the gap, and a closed path keeps only its own drawn closing
+  side.
+- A stroke exactly on the crop boundary is retained. Every returned edge lies
+  within the crop's bounding box.
+
+The same rule governs table finding on cropped pages (`TableFinder`,
+`debug_tablefinder`, `find_tables`, `extract_table`, and friends): snapping,
+joining, intersecting, and cell construction only use the in-crop pieces.
+`lines`, `lines_strict` and mixed `lines`/`lines_strict`/`explicit` strategies
+all obey it, and `lines_strict` still excludes rectangle- and path-derived
+edges from its "line" category.
+
+A crop whose box equals the parent's full box (for example the common
+`page.crop(page.bbox)` idiom) removes nothing, so it is treated as the parent
+view and keeps the parent's existing edge behaviour rather than clipping to
+that box. This preserves the historical result for pages that draw slightly
+outside their bounding box.
+
+Cropping is implemented by deriving edges from the objects a view already
+holds, clipped to that view's box: the crop already stores only the
+intersecting objects, so each additional view derives its own edges from that
+subset instead of copying the page's full path list. Edge lists are cached per
+view and never shared across views, so interleaving reads of the original page
+and several crops cannot leak geometry between them, and no object dictionary
+or caller-provided configuration is mutated.
+
+`.within_bbox(...)`, `.outside_bbox(...)` and `.filter(...)` only *select*
+objects; they do not re-crop, so they do not introduce a new edge boundary and
+keep the parent's region.
+
+When using the explicit table strategies on a cropped page, numeric
+`explicit_vertical_lines` / `explicit_horizontal_lines` keep their page
+coordinates and run the full height/width of the crop. A numeric hint that
+falls outside the crop is ignored — it is not pulled onto the boundary by
+`snap_tolerance` or `join_tolerance`. Object hints (`line`, `rect`, or path
+dictionaries) contribute only the segments that lie within the crop; the crop
+outline is never used as a substitute stroke. The interface still validates
+configurations as before (e.g., `explicit` requires at least two hints), and a
+valid configuration that does not enclose any cells returns an empty result.
+The same settings object can be reused across the original page and several
+crops; each view interprets it against its own region.
+
+See [docs/cropping.md](docs/cropping.md) for the design rationale and the cost
+model (including `examples/crop_edges/benchmark_crop_edges.py`).
+
+
 #### `image` properties
 
 *Note: Although the positioning and characteristics of `image` objects are available via `pdfplumber`, this library does not provide direct support for reconstructing image content. For that, please see [this suggestion](https://github.com/jsvine/pdfplumber/discussions/496#discussioncomment-1259772).*
@@ -419,8 +475,8 @@ By default, `extract_tables` uses the page's vertical and horizontal lines (or r
 |---------|-------------|
 |`"vertical_strategy"`| Either `"lines"`, `"lines_strict"`, `"text"`, or `"explicit"`. See explanation below.|
 |`"horizontal_strategy"`| Either `"lines"`, `"lines_strict"`, `"text"`, or `"explicit"`. See explanation below.|
-|`"explicit_vertical_lines"`| A list of vertical lines that explicitly demarcate cells in the table. Can be used in combination with any of the strategies above. Items in the list should be either numbers — indicating the `x` coordinate of a line the full height of the page — or `line`/`rect`/`curve` objects.|
-|`"explicit_horizontal_lines"`| A list of horizontal lines that explicitly demarcate cells in the table. Can be used in combination with any of the strategies above. Items in the list should be either numbers — indicating the `y` coordinate of a line the full height of the page — or `line`/`rect`/`curve` objects.|
+|`"explicit_vertical_lines"`| A list of vertical lines that explicitly demarcate cells in the table. Can be used in combination with any of the strategies above. Items in the list should be either numbers — indicating the `x` coordinate of a line the full height of the page — or `line`/`rect`/`curve` objects. On a cropped page, numeric hints outside the crop are ignored and object hints contribute only their in-crop segments.|
+|`"explicit_horizontal_lines"`| A list of horizontal lines that explicitly demarcate cells in the table. Can be used in combination with any of the strategies above. Items in the list should be either numbers — indicating the `y` coordinate of a line the full height of the page — or `line`/`rect`/`curve` objects. On a cropped page, numeric hints outside the crop are ignored and object hints contribute only their in-crop segments.|
 |`"snap_tolerance"`, `"snap_x_tolerance"`, `"snap_y_tolerance"`| Parallel lines within `snap_tolerance` points will be "snapped" to the same horizontal or vertical position.|
 |`"join_tolerance"`, `"join_x_tolerance"`, `"join_y_tolerance"`| Line segments on the same infinite line, and whose ends are within `join_tolerance` of one another, will be "joined" into a single line segment.|
 |`"edge_min_length"`| Edges shorter than `edge_min_length` will be discarded before attempting to reconstruct the table.|

@@ -768,6 +768,17 @@ class TableSettings:
             raise ValueError(f"Cannot resolve settings: {settings}")
 
 
+def _hint_in_region(value: T_num, region: T_bbox, orientation: str) -> bool:
+    """Whether a numeric explicit hint lies in the current region.
+
+    Numeric hints are page coordinates. On a cropped view, a hint outside the
+    region is dropped; it is never snapped onto the nearest boundary.
+    """
+    if orientation == "v":
+        return region[0] <= value <= region[2]
+    return region[1] <= value <= region[3]
+
+
 class TableFinder(object):
     """
     Given a PDF page, find plausible table structures.
@@ -793,6 +804,25 @@ class TableFinder(object):
             Table(self.page, cell_group) for cell_group in cells_to_tables(self.cells)
         ]
 
+    def _edge_region(self) -> Optional[T_bbox]:
+        """Region to which this finder clips geometry, or ``None`` for none.
+
+        `CroppedPage` reports its crop box; an ordinary page reports ``None``,
+        preserving historical behaviour (some pages legitimately draw slightly
+        outside their box). Object-form explicit hints use this exact same
+        region, so they cannot smuggle geometry from outside the view.
+        """
+        return getattr(self.page, "_edge_bbox", None)
+
+    def _hint_region(self) -> Optional[T_bbox]:
+        """Region outside which numeric hints are dropped, or ``None``.
+
+        On a real crop, numeric hints are confined to the crop. On an
+        ordinary (or merely filtered/bbox-selected) view, they keep their
+        historical full-page extent and are not filtered.
+        """
+        return getattr(self.page, "_table_region", None)
+
     def get_edges(self) -> T_obj_list:
         settings = self.settings
 
@@ -811,23 +841,35 @@ class TableFinder(object):
         v_strat = settings.vertical_strategy
         h_strat = settings.horizontal_strategy
 
+        region = self._edge_region()
+
         if v_strat == "text" or h_strat == "text":
             words = self.page.extract_words(**(settings.text_settings or {}))
 
         v_explicit = []
+        # Numeric hints keep their historical extent: the full height/width
+        # of this view's bounding box. On a real crop, a hint outside the
+        # crop region is dropped rather than pulled onto a boundary by snap
+        # tolerance. Uncapped views (`_table_region is None`) are unchanged.
+        hint_bbox = self.page.bbox
+        hint_region = self._hint_region()
         for desc in settings.explicit_vertical_lines or []:
             if isinstance(desc, dict):
-                for e in utils.obj_to_edges(desc):
+                for e in utils.obj_to_edges(desc, region):
                     if e["orientation"] == "v":
                         v_explicit.append(e)
             else:
+                if hint_region is not None and not _hint_in_region(
+                    desc, hint_region, "v"
+                ):
+                    continue
                 v_explicit.append(
                     {
                         "x0": desc,
                         "x1": desc,
-                        "top": self.page.bbox[1],
-                        "bottom": self.page.bbox[3],
-                        "height": self.page.bbox[3] - self.page.bbox[1],
+                        "top": hint_bbox[1],
+                        "bottom": hint_bbox[3],
+                        "height": hint_bbox[3] - hint_bbox[1],
                         "orientation": "v",
                     }
                 )
@@ -846,15 +888,19 @@ class TableFinder(object):
         h_explicit = []
         for desc in settings.explicit_horizontal_lines or []:
             if isinstance(desc, dict):
-                for e in utils.obj_to_edges(desc):
+                for e in utils.obj_to_edges(desc, region):
                     if e["orientation"] == "h":
                         h_explicit.append(e)
             else:
+                if hint_region is not None and not _hint_in_region(
+                    desc, hint_region, "h"
+                ):
+                    continue
                 h_explicit.append(
                     {
-                        "x0": self.page.bbox[0],
-                        "x1": self.page.bbox[2],
-                        "width": self.page.bbox[2] - self.page.bbox[0],
+                        "x0": hint_bbox[0],
+                        "x1": hint_bbox[2],
+                        "width": hint_bbox[2] - hint_bbox[0],
                         "top": desc,
                         "bottom": desc,
                         "orientation": "h",

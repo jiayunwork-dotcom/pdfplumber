@@ -2,7 +2,7 @@ import csv
 import json
 from io import StringIO
 from itertools import chain
-from typing import Any, Dict, List, Optional, Set, TextIO
+from typing import Any, Dict, List, Optional, Set, TextIO, Tuple
 
 from . import utils
 from ._typing import T_obj, T_obj_list
@@ -19,6 +19,18 @@ class Container(object):
     @property
     def objects(self) -> Dict[str, T_obj_list]:  # pragma: nocover
         raise NotImplementedError
+
+    @property
+    def _edge_bbox(self) -> Optional[Tuple[Any, Any, Any, Any]]:
+        """Region in which derived edges must lie, or ``None`` for no clip.
+
+        The base container derives edges from the full set of its objects, so
+        no clipping is applied. `CroppedPage` overrides this with its region,
+        so each view derives edges from the objects it already holds, clipped
+        to its own box. Nothing is derived or copied per crop beyond the
+        intersecting objects the crop already stores.
+        """
+        return None
 
     def to_dict(
         self, object_types: Optional[List[str]] = None
@@ -71,7 +83,8 @@ class Container(object):
     def rect_edges(self) -> T_obj_list:
         if hasattr(self, "_rect_edges"):
             return self._rect_edges
-        rect_edges_gen = (utils.rect_to_edges(r) for r in self.rects)
+        bbox = self._edge_bbox
+        rect_edges_gen = (utils.rect_to_edges(r, bbox) for r in self.rects)
         self._rect_edges: T_obj_list = list(chain(*rect_edges_gen))
         return self._rect_edges
 
@@ -79,7 +92,8 @@ class Container(object):
     def curve_edges(self) -> T_obj_list:
         if hasattr(self, "_curve_edges"):
             return self._curve_edges
-        curve_edges_gen = (utils.curve_to_edges(r) for r in self.curves)
+        bbox = self._edge_bbox
+        curve_edges_gen = (utils.curve_to_edges(r, bbox) for r in self.curves)
         self._curve_edges: T_obj_list = list(chain(*curve_edges_gen))
         return self._curve_edges
 
@@ -87,7 +101,12 @@ class Container(object):
     def edges(self) -> T_obj_list:
         if hasattr(self, "_edges"):
             return self._edges
-        line_edges = list(map(utils.line_to_edge, self.lines))
+        bbox = self._edge_bbox
+        line_edges = [
+            edge
+            for edge in map(lambda line: utils.line_to_edge(line, bbox), self.lines)
+            if edge is not None
+        ]
         self._edges: T_obj_list = line_edges + self.rect_edges + self.curve_edges
         return self._edges
 

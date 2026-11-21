@@ -1,8 +1,8 @@
 import itertools
 from operator import itemgetter
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
-from .._typing import T_bbox, T_num, T_obj, T_obj_list
+from .._typing import T_bbox, T_num, T_obj, T_obj_list, T_point
 from .clustering import cluster_objects
 
 
@@ -187,78 +187,303 @@ def resize_object(obj: T_obj, key: str, value: T_num) -> T_obj:
     return obj.__class__(tuple(obj.items()) + tuple(new_items))
 
 
-def curve_to_edges(curve: T_obj) -> T_obj_list:
-    point_pairs = zip(curve["pts"], curve["pts"][1:])
-    return [
-        {
-            "object_type": "curve_edge",
-            "x0": min(p0[0], p1[0]),
-            "x1": max(p0[0], p1[0]),
-            "top": min(p0[1], p1[1]),
-            "doctop": min(p0[1], p1[1]) + (curve["doctop"] - curve["top"]),
-            "bottom": max(p0[1], p1[1]),
-            "width": abs(p0[0] - p1[0]),
-            "height": abs(p0[1] - p1[1]),
-            "orientation": "v" if p0[0] == p1[0] else ("h" if p0[1] == p1[1] else None),
-        }
-        for p0, p1 in point_pairs
-    ]
+# Tolerance used only to absorb floating-point noise in segment clipping.
+# It is deliberately far smaller than any table tolerance, and is not used to
+# admit numeric hints that lie outside a region.
+CLIP_EPS = 1e-9
 
 
-def rect_to_edges(rect: T_obj) -> T_obj_list:
-    top, bottom, left, right = [dict(rect) for x in range(4)]
-    top.update(
-        {
-            "object_type": "rect_edge",
-            "height": 0,
-            "y0": rect["y1"],
-            "bottom": rect["top"],
-            "orientation": "h",
-        }
-    )
-    bottom.update(
-        {
-            "object_type": "rect_edge",
-            "height": 0,
-            "y1": rect["y0"],
-            "top": rect["top"] + rect["height"],
-            "doctop": rect["doctop"] + rect["height"],
-            "orientation": "h",
-        }
-    )
-    left.update(
-        {
-            "object_type": "rect_edge",
-            "width": 0,
-            "x1": rect["x0"],
-            "orientation": "v",
-        }
-    )
-    right.update(
-        {
-            "object_type": "rect_edge",
-            "width": 0,
-            "x0": rect["x1"],
-            "orientation": "v",
-        }
-    )
-    return [top, bottom, left, right]
+def _source_pts(obj: T_obj) -> Optional[List[T_point]]:
+    """Return an object's original points, if it exposes them.
+
+    Cropping (`crop_to_bbox`) rewrites an object's bounding-box fields but
+    leaves ``pts`` (and ``path``) untouched, so ``pts`` still describes the
+    stroke as drawn on the original page.  Using it here means a crop never
+    invents geometry and no per-view copy of the page's paths is needed.
+    """
+    pts = obj.get("pts")
+    if not isinstance(pts, (list, tuple)) or len(pts) < 2:
+        return None
+    try:
+        return [(float(pt[0]), float(pt[1])) for pt in pts]
+    except (TypeError, ValueError, IndexError):  # pragma: nocover
+        return None
 
 
-def line_to_edge(line: T_obj) -> T_obj:
-    edge = dict(line)
-    edge["orientation"] = "h" if (line["top"] == line["bottom"]) else "v"
+def _source_bbox(obj: T_obj) -> T_bbox:
+    """Bounding box of the original stroke (not of a clipped object)."""
+    pts = _source_pts(obj)
+    if pts is not None:
+        xs = [pt[0] for pt in pts]
+        ys = [pt[1] for pt in pts]
+        return (min(xs), min(ys), max(xs), max(ys))
+    return obj_to_bbox(obj)
+
+
+def _pdf_height(obj: T_obj, source_top: T_num) -> Optional[T_num]:
+    """Recover the constant ``y1 + top`` used by pdfplumber's y-flip.
+
+    Holding it constant lets a clipped edge carry consistent ``y0``/``y1``
+    values without consulting the page.
+    """
+    y1 = obj.get("y1")
+    if y1 is None:
+        return None
+    return float(y1) + source_top
+
+
+def clip_segment(
+    p0: T_point, p1: T_point, bbox: T_bbox
+) -> Optional[Tuple[T_point, T_point]]:
+    """Clip a line segment to an axis-aligned, inclusive bounding box.
+
+    Returns the pair of clipped endpoints, or ``None`` when no part of the
+    segment lies within the box.  A non-zero segment that only touches the
+    box at a single point counts as outside: it contributes no edge.
+    """
+    x0, top, x1, bottom = bbox
+    ax, ay = p0
+    bx, by = p1
+    dx, dy = bx - ax, by - ay
+
+    if abs(dx) <= CLIP_EPS and abs(dy) <= CLIP_EPS:
+        inside = (x0 - CLIP_EPS) <= ax <= (x1 + CLIP_EPS) and (
+            top - CLIP_EPS
+        ) <= ay <= (bottom + CLIP_EPS)
+        return (p0, p1) if inside else None
+
+    t0, t1 = 0.0, 1.0
+    for p, q in (
+        (-dx, ax - x0),
+        (dx, x1 - ax),
+        (-dy, ay - top),
+        (dy, bottom - ay),
+    ):
+        if abs(p) <= CLIP_EPS:
+            if q < -CLIP_EPS:
+                return None
+        else:
+            r = q / p
+            if p < 0:
+                if r > t1:
+                    return None
+                if r > t0:
+                    t0 = r
+            else:
+                if r < t0:
+                    return None
+                if r < t1:
+                    t1 = r
+
+    if t1 < t0 - CLIP_EPS:
+        return None
+
+    def snap(value: T_num, lo: T_num, hi: T_num) -> T_num:
+        if lo - CLIP_EPS <= value <= lo + CLIP_EPS:
+            return lo
+        if hi - CLIP_EPS <= value <= hi + CLIP_EPS:
+            return hi
+        return value
+
+    q0 = (snap(ax + dx * t0, x0, x1), snap(ay + dy * t0, top, bottom))
+    q1 = (snap(ax + dx * t1, x0, x1), snap(ay + dy * t1, top, bottom))
+
+    if abs(q0[0] - q1[0]) <= CLIP_EPS and abs(q0[1] - q1[1]) <= CLIP_EPS:
+        # Tangential contact only.
+        return None
+
+    return (q0, q1)
+
+
+def _edge_from_segment(
+    source: T_obj,
+    object_type: str,
+    p0: T_point,
+    p1: T_point,
+    orientation: Optional[str],
+    source_top: T_num,
+) -> T_obj:
+    x0, x1 = sorted((p0[0], p1[0]))
+    top, bottom = sorted((p0[1], p1[1]))
+    delta = source.get("doctop", 0) - source.get("top", 0)
+    height = _pdf_height(source, source_top)
+    edge = {k: v for k, v in source.items() if k not in ("pts", "path")}
+    edge.update(
+        {
+            "object_type": object_type,
+            "x0": x0,
+            "x1": x1,
+            "top": top,
+            "bottom": bottom,
+            "doctop": top + delta,
+            "width": x1 - x0,
+            "height": bottom - top,
+            "orientation": orientation,
+            "pts": [p0, p1],
+        }
+    )
+    if height is not None:
+        edge["y1"] = height - top
+        edge["y0"] = height - bottom
     return edge
 
 
-def obj_to_edges(obj: T_obj) -> T_obj_list:
+def clip_edge_to_bbox(edge: T_obj, bbox: T_bbox) -> Optional[T_obj]:
+    """Clip an existing edge object to ``bbox`` without mutating it."""
+    source_top = edge.get("top", 0)
+    seg = clip_segment((edge["x0"], edge["top"]), (edge["x1"], edge["bottom"]), bbox)
+    if seg is None:
+        return None
+    if seg == ((edge["x0"], edge["top"]), (edge["x1"], edge["bottom"])):
+        return dict(edge)
+    return _edge_from_segment(
+        edge,
+        edge.get("object_type", "edge"),
+        seg[0],
+        seg[1],
+        edge.get("orientation"),
+        source_top,
+    )
+
+
+def curve_to_edges(curve: T_obj, bbox: Optional[T_bbox] = None) -> T_obj_list:
+    point_pairs = list(zip(curve["pts"], curve["pts"][1:]))
+
+    if bbox is None:
+        return [
+            {
+                "object_type": "curve_edge",
+                "x0": min(p0[0], p1[0]),
+                "x1": max(p0[0], p1[0]),
+                "top": min(p0[1], p1[1]),
+                "doctop": min(p0[1], p1[1]) + (curve["doctop"] - curve["top"]),
+                "bottom": max(p0[1], p1[1]),
+                "width": abs(p0[0] - p1[0]),
+                "height": abs(p0[1] - p1[1]),
+                "orientation": (
+                    "v" if p0[0] == p1[0] else ("h" if p0[1] == p1[1] else None)
+                ),
+            }
+            for p0, p1 in point_pairs
+        ]
+
+    # Clip each drawn segment on its own: segments that leave the region and
+    # return are cut, never bridged across the gap; no closing side is added.
+    src = _source_bbox(curve)
+    edges = []
+    for p0, p1 in point_pairs:
+        orientation = "v" if p0[0] == p1[0] else ("h" if p0[1] == p1[1] else None)
+        seg = clip_segment(p0, p1, bbox)
+        if seg is None:
+            continue
+        edges.append(
+            _edge_from_segment(curve, "curve_edge", seg[0], seg[1], orientation, src[1])
+        )
+    return edges
+
+
+def _rect_corners(rect: T_obj) -> T_bbox:
+    """The rectangle's original outline, independent of any crop."""
+    pts = _source_pts(rect)
+    if pts is not None:
+        xs = [pt[0] for pt in pts]
+        ys = [pt[1] for pt in pts]
+        return (min(xs), min(ys), max(xs), max(ys))
+    return (
+        rect["x0"],
+        rect["top"],
+        rect["x1"],
+        rect["bottom"],
+    )
+
+
+def rect_to_edges(rect: T_obj, bbox: Optional[T_bbox] = None) -> T_obj_list:
+    if bbox is None:
+        top, bottom, left, right = [dict(rect) for x in range(4)]
+        top.update(
+            {
+                "object_type": "rect_edge",
+                "height": 0,
+                "y0": rect["y1"],
+                "bottom": rect["top"],
+                "orientation": "h",
+            }
+        )
+        bottom.update(
+            {
+                "object_type": "rect_edge",
+                "height": 0,
+                "y1": rect["y0"],
+                "top": rect["top"] + rect["height"],
+                "doctop": rect["doctop"] + rect["height"],
+                "orientation": "h",
+            }
+        )
+        left.update(
+            {
+                "object_type": "rect_edge",
+                "width": 0,
+                "x1": rect["x0"],
+                "orientation": "v",
+            }
+        )
+        right.update(
+            {
+                "object_type": "rect_edge",
+                "width": 0,
+                "x0": rect["x1"],
+                "orientation": "v",
+            }
+        )
+        return [top, bottom, left, right]
+
+    src_x0, src_top, src_x1, src_bottom = _rect_corners(rect)
+    candidates = [
+        ((src_x0, src_top), (src_x1, src_top), "h"),
+        ((src_x0, src_bottom), (src_x1, src_bottom), "h"),
+        ((src_x0, src_top), (src_x0, src_bottom), "v"),
+        ((src_x1, src_top), (src_x1, src_bottom), "v"),
+    ]
+    edges = []
+    for p0, p1, orientation in candidates:
+        seg = clip_segment(p0, p1, bbox)
+        if seg is None:
+            continue
+        edges.append(
+            _edge_from_segment(rect, "rect_edge", seg[0], seg[1], orientation, src_top)
+        )
+    return edges
+
+
+def line_to_edge(line: T_obj, bbox: Optional[T_bbox] = None) -> Optional[T_obj]:
+    edge = dict(line)
+    edge["orientation"] = "h" if (line["top"] == line["bottom"]) else "v"
+    if bbox is None:
+        return edge
+
+    src_x0, src_top, src_x1, src_bottom = _source_bbox(line)
+    seg = clip_segment((src_x0, src_top), (src_x1, src_bottom), bbox)
+    if seg is None:
+        return None
+    return _edge_from_segment(
+        line, "line", seg[0], seg[1], edge["orientation"], src_top
+    )
+
+
+def obj_to_edges(obj: T_obj, bbox: Optional[T_bbox] = None) -> T_obj_list:
     t = obj["object_type"]
     if "_edge" in t:
-        return [obj]
+        if bbox is None:
+            # Copy: callers may hand us their own dicts, and neither table
+            # finding nor later merging may modify them.
+            return [dict(obj)]
+        edge = clip_edge_to_bbox(obj, bbox)
+        return [] if edge is None else [edge]
     elif t == "line":
-        return [line_to_edge(obj)]
+        edge = line_to_edge(obj, bbox)
+        return [] if edge is None else [edge]
     else:
-        return {"rect": rect_to_edges, "curve": curve_to_edges}[t](obj)
+        return {"rect": rect_to_edges, "curve": curve_to_edges}[t](obj, bbox)
 
 
 def filter_edges(

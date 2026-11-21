@@ -245,6 +245,16 @@ class Page(Container):
         return self.bbox[3] - self.bbox[1]
 
     @property
+    def _table_region(self) -> Optional[T_bbox]:
+        """Region to which numeric explicit hints are confined, or ``None``.
+
+        ``None`` means this view is not a real crop, so numeric hints keep
+        their historical behaviour (full page extent, unfiltered). A real
+        crop narrows the region to its box; hints outside are dropped.
+        """
+        return None
+
+    @property
     def structure_tree(self) -> List[Dict[str, Any]]:
         """Return the structure tree for a page, if any."""
         try:
@@ -724,12 +734,42 @@ class CroppedPage(DerivedPage):
         super().__init__(parent_page)
 
         self._crop_fn = _crop_fn
+        self._crop_is_clip = crop_fn is utils.crop_to_bbox
+        self._crop_bbox = crop_bbox
+        # A crop that keeps the parent's full box removes nothing: objects are
+        # unchanged, so the effective region stays the parent's. This keeps
+        # the identity idiom `page.crop(page.bbox)`, and crops that merely
+        # re-state an existing view, from cutting geometry at the box edge.
+        self._crop_limits = self._crop_is_clip and tuple(crop_bbox) != tuple(
+            parent_page.bbox
+        )
 
         # Note: testing for original function passed, not _crop_fn
         if crop_fn is utils.outside_bbox:
             self.bbox = parent_page.bbox
         else:
             self.bbox = crop_bbox
+
+    @property
+    def _edge_bbox(self) -> Optional[T_bbox]:
+        """Region edges derived from this view's objects must stay within.
+
+        `.crop` clips objects to its box, so edges derived from those objects
+        are clipped to the same box. `.within_bbox` and `.outside_bbox` only
+        *select* objects; they do not re-crop, so they inherit the parent's
+        region instead of introducing a new one.
+        """
+        if self._crop_limits:
+            return self._crop_bbox
+        return self.parent_page._edge_bbox
+
+    @property
+    def _table_region(self) -> Optional[T_bbox]:
+        # A real crop confines numeric hints to its box; selection-only views
+        # inherit the parent's region.
+        if self._crop_limits:
+            return self._crop_bbox
+        return self.parent_page._table_region
 
     @property
     def objects(self) -> Dict[str, T_obj_list]:
@@ -746,6 +786,16 @@ class FilteredPage(DerivedPage):
         self.bbox = parent_page.bbox
         self.filter_fn = filter_fn
         super().__init__(parent_page)
+
+    @property
+    def _edge_bbox(self) -> Optional[T_bbox]:
+        # Filtering selects objects; it does not change the region in which
+        # derived edges may lie.
+        return self.parent_page._edge_bbox
+
+    @property
+    def _table_region(self) -> Optional[T_bbox]:
+        return self.parent_page._table_region
 
     @property
     def objects(self) -> Dict[str, T_obj_list]:
